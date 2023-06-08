@@ -721,6 +721,62 @@ impl<K: Key, V> SlotMap<K, V> {
     }
 
     /// Returns mutable references to the values corresponding to the given
+    /// keys. If a key is invalid, `None` will be returned in its position.
+    /// If a key appears multiple times, only its first instance in the
+    /// `keys` array will have a corresponding `Some()` in the returned array.
+    /// All further instances will correspond to `None`.
+    ///
+    /// Requires at least stable Rust version 1.51.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use slotmap::*;
+    /// let mut sm = SlotMap::new();
+    /// let ka = sm.insert("butter");
+    /// let kb = sm.insert("apples");
+    /// let kc = sm.insert("charlie");
+    /// sm.remove(kc); // Make key c invalid.
+    /// let [a1, b, a2, c] = sm.get_disjoint_mut_optional([ka, kb, ka, kc]);
+    /// assert_eq!(a1, Some(&mut "butter"));
+    /// assert_eq!(b, Some(&mut "apples"));
+    /// assert_eq!(a2, None); // Already returned the value at key a previously.
+    /// assert_eq!(c, None); // Key c is invalid.
+    /// ```
+    #[cfg(has_min_const_generics)]
+    pub fn get_disjoint_mut_optional<const N: usize>(&mut self, keys: [K; N]) -> [Option<&mut V>; N] {
+        let mut ptrs: [*mut V; N] = [core::ptr::null_mut(); N];
+
+        for i in 0..N {
+            let kd = keys[i].data();
+            if !self.contains_key(kd.into()) {
+                continue;
+            }
+
+            // This key is valid, and thus the slot is occupied. Temporarily
+            // mark it as unoccupied so duplicate keys would show up as invalid.
+            // This gives us a linear time disjointness check.
+            unsafe {
+                let slot = self.slots.get_unchecked_mut(kd.idx as usize);
+                slot.version ^= 1;
+                ptrs[i] = &mut *slot.u.value;
+            }
+        }
+
+        // Undo temporary unoccupied markings.
+        for (i, k) in (0..N).zip(&keys) {
+            let idx = k.data().idx as usize;
+            if !ptrs[i].is_null() {
+                unsafe {
+                    self.slots.get_unchecked_mut(idx).version ^= 1;
+                }
+            }
+        }
+
+        unsafe { ptrs.map(|ptr| ptr.as_mut()) }
+    }
+
+    /// Returns mutable references to the values corresponding to the given
     /// keys. All keys must be valid and disjoint.
     ///
     /// Requires at least stable Rust version 1.51.
